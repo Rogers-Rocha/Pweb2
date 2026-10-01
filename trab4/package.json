@@ -1,0 +1,8 @@
+{
+  "name": "mini-api-express",
+  "version": "1.0.0",
+  "description": "Mini API para demonstrar o ciclo de vida de uma requisição no Express 5",
+  "main": "src/app.js",
+  "scripts": { "start": "node src/app.js" },
+  "dependencies": { "express": "^5.1.0" }
+}
