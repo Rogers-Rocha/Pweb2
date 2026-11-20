@@ -1,11 +1,11 @@
 # Gym API — Documentação de arquitetura
 
-API RESTful para gestão de academia. **Stack:** Node.js 20 · NestJS 10 · PostgreSQL 16 · Prisma 5 · node-cache · Docker · GitHub Actions.
+API RESTful para gestão de academia. **Stack:** Node.js 20 · NestJS 10 · PostgreSQL 16 · Prisma 5 · node-cache · Docker · GitHub Actions · Railway.
 
 ## 1. Visão geral
 
 ```
-Cliente ──HTTPS──▶ Load balancer (nginx / proxy da Fly.io)
+Cliente ──HTTPS──▶ Load balancer (nginx local / proxy do Railway)
                         ├──▶ Réplica 1 (NestJS) ─┐
                         └──▶ Réplica 2 (NestJS) ─┴──▶ PostgreSQL
 ```
@@ -83,19 +83,21 @@ No CI, as migrações são aplicadas em um Postgres limpo e `prisma migrate diff
 
 ## 4. Segurança — requisitos OWASP ASVS 5.0 atendidos
 
-> A numeração exata dos itens (ex.: `6.2.x`) deve ser conferida no PDF oficial do ASVS 5.0.0 ao entregar; abaixo cito o **capítulo** e o texto do requisito.
+Referência: **OWASP ASVS 5.0.0 (maio de 2025)**, numeração oficial `capítulo.seção.requisito`. A coluna "Nível" indica o nível mínimo do ASVS em que o requisito é exigido (L1, L2 ou L3).
 
-| # | Capítulo ASVS 5.0 | Requisito (resumo) | Por que faz sentido aqui | Como foi atendido |
-|---|---|---|---|---|
-| 1 | **V6 Authentication** — senhas | Tamanho mínimo, permitir senhas longas e bloquear senhas comuns | A API guarda credenciais de alunos e funcionários | DTO: 10–128 caracteres, sem regras de composição forçada, `@IsNotCommonPassword()` (lista curta; em produção usar lista maior/HIBP). `create-user.dto.ts`, `create-member.dto.ts`, `password.validator.ts`. |
-| 2 | **V6 Authentication** — anti-força-bruta | Controles contra *brute force* e *credential stuffing* | `/auth/login` é o endpoint mais atacado | Rate limit de 5 tentativas/min por IP + bloqueio da conta por 15 min após 5 falhas consecutivas. `auth.controller.ts`, `auth.service.ts`. |
-| 3 | **V6 Authentication** — enumeração | Respostas de falha de autenticação não revelam se o usuário existe | Evita descobrir e-mails de alunos | Mesma mensagem/status para e-mail inexistente, senha errada, conta bloqueada ou inativa; hash "isca" iguala o tempo de resposta. Coberto por teste (`pipeline.e2e.spec.ts`). |
-| 4 | **V11 Cryptography** — armazenamento de senha | Senhas guardadas com KDF aprovado, com fator de custo e salt | Vazamento do banco não pode expor senhas | `bcryptjs` com custo 12 (salt automático). `common/utils/password.ts`. Hash nunca é retornado (`select` explícito). |
-| 5 | **V9 Self-contained Tokens** | Validar assinatura, algoritmo permitido, expiração, emissor e audiência | O JWT é a base de toda a autenticação | HS256 em *allow-list* (rejeita `none`), `exp` de 30 min, `iss`/`aud` validados, segredo ≥ 32 caracteres exigido na inicialização. `jwt.strategy.ts`, `auth.module.ts`, `env.validation.ts`. Teste com token `alg: none`. |
-| 6 | **V8 Authorization** | Acesso por função restrito a quem tem permissão explícita + controle em nível de objeto (BOLA/IDOR) | Membro não pode ver dados de outro membro | *Deny by default* (guard global + `@Public()` explícito), RBAC com `@Roles`, e checagens por objeto nos services (membro só acessa o próprio cadastro/check-ins/treinos; trainer só edita treinos que criou). Testes de 403. |
-| 7 | **V2 Validation / V1 Sanitization** | Validação positiva da estrutura e dos tipos de entrada; tratar dados antes de usá-los | Toda entrada é não confiável | DTOs com `class-validator` (tipos, tamanhos, enums, UUID, datas), `whitelist` + `forbidNonWhitelisted`, limite de 100 kb, sanitização do middleware; Prisma usa consultas parametrizadas (sem SQL injection). |
-| 8 | **V16 Security Logging and Error Handling** | Erros genéricos ao cliente, sem dados sensíveis; eventos de segurança registrados | Evita vazar stack/SQL e permite auditoria | Filtro global padronizado; logs JSON estruturados com `requestId`; eventos `login_success`, `login_failed`, `account_locked` (sem senha/token). |
-| 9 | **V13 Configuration** | Segredos fora do código; configuração segura | Evitar segredos no repositório | Tudo por variáveis de ambiente (`.env` no `.gitignore`), falha rápida se faltar `JWT_SECRET`/`DATABASE_URL`, Helmet, container rodando como usuário não-root. |
+| # | Requisito ASVS 5.0.0 | Nível | O que o requisito pede | Por que faz sentido aqui | Como foi atendido (arquivos) |
+|---|---|---|---|---|---|
+| 1 | **V6.2.1**, **V6.2.5**, **V6.2.8**, **V6.2.9** (Authentication › Password Security) | L1 / L2 | Senha com no mínimo 8 caracteres; sem regras de composição; senha verificada exatamente como recebida; aceitar senhas de pelo menos 64 caracteres | A API guarda credenciais de alunos e funcionários | DTOs exigem 10–128 caracteres e não impõem maiúscula/número/símbolo; a sanitização **nunca** altera campos `password` (sem trim/truncamento). `create-user.dto.ts`, `create-member.dto.ts`, `sanitize.util.ts`. |
+| 2 | **V6.3.1** (Authentication › General Authentication Security) | L1 | Controles contra *credential stuffing* e força bruta | `/auth/login` é o endpoint mais atacado | Rate limit de 5 tentativas/min por IP no login + bloqueio da conta por 15 min após 5 falhas consecutivas. `auth.controller.ts`, `auth.service.ts`, `auth.constants.ts`. |
+| 3 | **V6.3.8** (Authentication › General Authentication Security) | L3 | Não permitir deduzir usuários válidos por mensagem, código HTTP ou tempo de resposta | Evita descobrir e-mails de alunos | Mesma mensagem e status 401 para e-mail inexistente, senha errada, conta bloqueada ou inativa; hash "isca" iguala o tempo de resposta. Não há cadastro público. Coberto por teste (`pipeline.e2e.spec.ts`). |
+| 4 | **V11.4.2** (Cryptography › Hashing) | L2 | Senhas armazenadas com função de hash de senha computacionalmente cara, com parâmetros atuais | Vazamento do banco não pode expor senhas | `bcryptjs` com custo 12 e salt automático; o hash nunca é retornado (`select` explícito). `common/utils/password.ts`, `users.service.ts`. |
+| 5 | **V9.1.1**, **V9.1.2**, **V9.2.1**, **V9.2.3** (Self-contained Tokens) | L1 / L2 | Validar assinatura; só algoritmos de uma *allow-list* (nunca `none`); validar `exp`/`nbf`; validar audiência (`aud`) | O JWT é a base de toda a autenticação | HS256 em *allow-list*, `ignoreExpiration: false` com `exp` de 30 min, `iss` e `aud` validados, segredo ≥ 32 caracteres exigido na inicialização. `jwt.strategy.ts`, `auth.module.ts`, `env.validation.ts`. Teste com token `alg: none`. |
+| 6 | **V8.2.1**, **V8.2.2**, **V8.3.1** (Authorization) | L1 | Acesso a funções só com permissão explícita; acesso a dados por objeto (contra IDOR/BOLA); autorização aplicada no servidor | Membro não pode ver dados de outro membro | *Deny by default* (guard global + `@Public()` explícito), RBAC com `@Roles`, checagens por objeto nos services (membro só acessa o próprio cadastro, check-ins e treinos; trainer só edita os treinos que criou). Regras documentadas na tabela da §1 (atende também **V8.1.1**). Testes de 403. |
+| 7 | **V2.2.1**, **V2.2.2** (Validation) e **V1.2.4** (Injection Prevention) | L1 | Validação positiva da entrada, feita na camada de serviço confiável; consultas parametrizadas/ORM contra SQL injection | Toda entrada é não confiável | DTOs com `class-validator` (tipos, tamanhos, enums, UUID, datas), `whitelist` + `forbidNonWhitelisted`, limite de 100 kb; Prisma gera consultas parametrizadas. `app.setup.ts`, `*/dto/*.ts`. |
+| 8 | **V16.5.1**, **V16.5.4**, **V16.3.1**, **V16.2.5** (Security Logging and Error Handling) | L2 / L3 | Mensagem genérica em erros inesperados (sem stack, SQL, segredos); *handler* de último recurso; registrar autenticações com sucesso e falha; não registrar dados sensíveis | Evita vazar detalhes internos e permite auditoria | Filtro global `@Catch()` padroniza **toda** exceção e devolve só mensagem genérica no 500; logs JSON com `requestId`; eventos `login_success`, `login_failed`, `account_locked`; o logger nunca registra corpo, query, headers ou tokens. `all-exceptions.filter.ts`, `request-logger.middleware.ts`, `auth.service.ts`. |
+| 9 | **V3.4.1**, **V3.4.2**, **V3.4.4** (Web Frontend Security › Browser Security Mechanism Headers) | L1 / L2 | Cabeçalho HSTS; CORS restrito a uma *allow-list* de origens; `X-Content-Type-Options: nosniff` | A API será consumida por um front-end no navegador | Helmet (HSTS de 1 ano, `nosniff`, remove `X-Powered-By`); CORS só para as origens da variável `CORS_ORIGINS` (vazio = desligado). `app.setup.ts`. |
+
+**Fora de escopo, de propósito:** **V6.2.4** (checar a senha contra as ~3000 senhas mais comuns) é atendido só em parte: o validador `@IsNotCommonPassword()` usa uma lista curta. Para cumpri-lo por completo, basta trocar por uma lista maior (ex.: top 10k) ou pela API *Pwned Passwords*.
 
 ## 5. Cache
 
@@ -113,17 +115,25 @@ No CI, as migrações são aplicadas em um Postgres limpo e `prisma migrate diff
   for i in $(seq 1 8); do curl -si http://localhost:8080/api/health | grep -i x-instance-id; done
   ```
   Os ids alternam entre as réplicas. Derrubar uma (`docker stop <container>`) não interrompe o serviço.
-- **Produção:** Fly.io com `min_machines_running = 2` (`fly.toml`); o proxy da Fly balanceia entre as machines e usa o `/api/health` como *health check*.
+- **Produção:** Railway com **2 réplicas** do serviço da API (*Settings › Deploy › Replicas*). O proxy do Railway distribui as requisições entre as réplicas e usa `/api/health` como *health check*. Com `EXPOSE_INSTANCE_ID=true`, o header `X-Instance-Id` mostra qual réplica respondeu:
+  ```bash
+  for i in $(seq 1 10); do curl -si https://<seu-app>.up.railway.app/api/health | grep -i x-instance-id; done
+  ```
+  (O `fly.toml` continua no repositório como alternativa de deploy na Fly.io, com `min_machines_running = 2`.)
 - **Stateless:** a API não guarda sessão em memória (JWT), então qualquer réplica atende qualquer requisição. Exceções conhecidas: cache e contador de rate-limit são por réplica (o limite efetivo é ~N× em N réplicas; para limite global usar storage Redis no Throttler).
-- **Migrações com réplicas:** rodam uma vez por deploy (`release_command` na Fly) ou, no compose, com `prisma migrate deploy` (que usa *advisory lock* — réplicas simultâneas não conflitam).
+- **Migrações com réplicas:** com `RUN_MIGRATIONS=true`, cada réplica roda `prisma migrate deploy` ao subir (no Railway e no compose). O Prisma usa *advisory lock* no PostgreSQL, então réplicas que sobem juntas não conflitam e a migração é aplicada uma única vez.
 
-## 7. CI/CD (GitHub Actions — `.github/workflows/ci-cd.yml`)
+## 7. CI/CD
 
-1. **test** (PR e push): `npm ci` → `prisma validate` → migrações em Postgres limpo → checagem de drift do schema → typecheck → testes → build → `npm audit` (não bloqueante).
+O workflow fica na **raiz do repositório** (`.github/workflows/ci-cd.yml`), porque o GitHub Actions só lê workflows nesse caminho. Ele roda dentro de `trabFinal/` e só dispara quando algo nessa pasta muda.
+
+**CI — GitHub Actions** (todo push e PR na `main`):
+1. **test**: `npm ci` → `prisma validate` → migrações em Postgres limpo → checagem de drift do schema → typecheck → testes → build → `npm audit` (não bloqueante).
 2. **docker**: constrói a imagem (valida o Dockerfile).
-3. **deploy** (somente push em `main`): `flyctl deploy --remote-only` (o `release_command` aplica as migrações) e garante 2 réplicas.
 
-Segredo necessário no GitHub: `FLY_API_TOKEN`.
+**CD — Railway** (somente `main`): o serviço da API está ligado ao repositório no GitHub, com *Root Directory* = `trabFinal` e a opção **Wait for CI** ativada. A cada push na `main`, o Railway espera o workflow acima terminar com sucesso; só então constrói a imagem pelo `Dockerfile` e publica nas 2 réplicas. Se o CI falhar, o deploy não acontece.
+
+Variáveis configuradas no Railway (nunca no repositório): `DATABASE_URL` (referência ao Postgres do projeto), `JWT_SECRET`, `RUN_MIGRATIONS=true`, `TRUST_PROXY=1`, `EXPOSE_INSTANCE_ID=true`, `NODE_ENV=production`.
 
 ## 8. Limitações conhecidas / próximos passos
 
