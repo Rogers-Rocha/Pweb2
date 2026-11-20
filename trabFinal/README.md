@@ -61,12 +61,27 @@ curl -si localhost:3000/api/workouts -H "authorization: Bearer $TOKEN" | grep -i
 ## Variáveis de ambiente
 Veja [`.env.example`](.env.example). Obrigatórias: `DATABASE_URL` e `JWT_SECRET` (≥ 32 caracteres).
 
-## Deploy (Fly.io + GitHub Actions)
-1. `fly launch --no-deploy --copy-config` (ajuste o `app` em `fly.toml`).
-2. Banco PostgreSQL gerenciado (Fly Postgres, Neon, Supabase…) e então:
-   `fly secrets set DATABASE_URL="postgresql://..." JWT_SECRET="$(openssl rand -hex 48)" SEED_ADMIN_PASSWORD="<senha forte>" CORS_ORIGINS="https://seu-front"`
-3. `fly tokens create deploy` → salve o resultado como secret **`FLY_API_TOKEN`** no repositório GitHub.
-4. `git push origin main` — o workflow testa, constrói e faz o deploy (migrações via `release_command`; 2 réplicas).
-5. Seed do admin em produção: `fly ssh console -C "node prisma/seed.js"`.
+## Deploy (GitHub Actions + Railway, 2 réplicas)
+- **CI:** `.github/workflows/ci-cd.yml`, na raiz do repositório.
+- **CD:** o Railway faz o deploy a partir da `main`, depois que o CI passa (opção *Wait for CI*).
 
-Outras plataformas com réplicas (Render, Railway, Cloud Run) funcionam com o mesmo `Dockerfile`; basta trocar o job `deploy`.
+1. No Railway: **New Project → Deploy from GitHub repo** → escolha este repositório.
+2. No serviço da API, em **Settings**: *Root Directory* = `trabFinal`; *Healthcheck Path* = `/api/health`; *Replicas* = `2`; ative **Wait for CI**. O Railway detecta o `Dockerfile` sozinho.
+3. No projeto: **+ New → Database → PostgreSQL**.
+4. Nas **Variables** do serviço da API:
+   ```
+   DATABASE_URL=${{Postgres.DATABASE_URL}}
+   JWT_SECRET=<gere com: openssl rand -hex 48>
+   NODE_ENV=production
+   RUN_MIGRATIONS=true
+   TRUST_PROXY=1
+   EXPOSE_INSTANCE_ID=true
+   ```
+5. **Settings → Networking → Generate Domain** para ter a URL pública.
+6. Seed do admin em produção (rodando na sua máquina, com a URL **pública** do Postgres, em *Postgres → Variables → `DATABASE_PUBLIC_URL`*):
+   ```bash
+   DATABASE_URL="<DATABASE_PUBLIC_URL>" NODE_ENV=production SEED_ADMIN_PASSWORD="<senha forte>" npm run prisma:seed
+   ```
+7. Prova do balanceamento: `for i in $(seq 1 10); do curl -si https://<seu-app>.up.railway.app/api/health | grep -i x-instance-id; done`
+
+O `fly.toml` continua no repositório como alternativa (Fly.io com `min_machines_running = 2`).
