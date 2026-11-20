@@ -1,0 +1,50 @@
+# Ambiente completo com LOAD BALANCING: nginx -> N réplicas da API -> PostgreSQL.
+#   docker compose up --build            (2 réplicas, conforme deploy.replicas)
+#   docker compose up --build --scale api=4
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gym
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gym_dev_password}
+      POSTGRES_DB: gym
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # somente localhost (para rodar o seed/ferramentas a partir da máquina)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gym -d gym"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://gym:${DB_PASSWORD:-gym_dev_password}@db:5432/gym?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET (>= 32 caracteres) no .env ou no ambiente}
+      JWT_EXPIRES_IN: 30m
+      RUN_MIGRATIONS: "true"
+      TRUST_PROXY: "1"            # 1 proxy (nginx) à frente
+      EXPOSE_INSTANCE_ID: "true"  # header X-Instance-Id para demonstrar o balanceamento
+      CORS_ORIGINS: http://localhost:5173
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    expose:
+      - "3000"                    # sem porta publicada: o acesso externo é só via nginx
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
