@@ -1,11 +1,11 @@
 # Gym API — Documentação de arquitetura
 
-API RESTful para gestão de academia. **Stack:** Node.js 20 · NestJS 10 · PostgreSQL 16 · Prisma 5 · node-cache · Docker · GitHub Actions · Railway.
+API RESTful para gestão de academia. **Stack:** Node.js 20 · NestJS 10 · PostgreSQL 16 · Prisma 5 · node-cache · Docker · GitHub Actions · Render (API) · Vercel (frontend React).
 
 ## 1. Visão geral
 
 ```
-Cliente ──HTTPS──▶ Load balancer (nginx local / proxy do Railway)
+Cliente ──HTTPS──▶ Load balancer (nginx local / proxy do Render)
                         ├──▶ Réplica 1 (NestJS) ─┐
                         └──▶ Réplica 2 (NestJS) ─┴──▶ PostgreSQL
 ```
@@ -115,25 +115,28 @@ Referência: **OWASP ASVS 5.0.0 (maio de 2025)**, numeração oficial `capítulo
   for i in $(seq 1 8); do curl -si http://localhost:8080/api/health | grep -i x-instance-id; done
   ```
   Os ids alternam entre as réplicas. Derrubar uma (`docker stop <container>`) não interrompe o serviço.
-- **Produção:** Railway com **2 réplicas** do serviço da API (*Settings › Deploy › Replicas*). O proxy do Railway distribui as requisições entre as réplicas e usa `/api/health` como *health check*. Com `EXPOSE_INSTANCE_ID=true`, o header `X-Instance-Id` mostra qual réplica respondeu:
+- **Produção:** Render (Blueprint `render.yaml` na raiz). O plano gratuito roda **1 instância**, por isso a evidência de balanceamento é a configuração local acima (aceita pelo enunciado). Em plano pago basta `numInstances: 2` no `render.yaml`: o proxy do Render distribui entre as instâncias e usa `/api/health` como *health check*. O `X-Instance-Id` mostra qual instância respondeu:
   ```bash
-  for i in $(seq 1 10); do curl -si https://<seu-app>.up.railway.app/api/health | grep -i x-instance-id; done
+  for i in $(seq 1 10); do curl -si https://<gym-api>.onrender.com/api/health | grep -i x-instance-id; done
   ```
   (O `fly.toml` continua no repositório como alternativa de deploy na Fly.io, com `min_machines_running = 2`.)
 - **Stateless:** a API não guarda sessão em memória (JWT), então qualquer réplica atende qualquer requisição. Exceções conhecidas: cache e contador de rate-limit são por réplica (o limite efetivo é ~N× em N réplicas; para limite global usar storage Redis no Throttler).
-- **Migrações com réplicas:** com `RUN_MIGRATIONS=true`, cada réplica roda `prisma migrate deploy` ao subir (no Railway e no compose). O Prisma usa *advisory lock* no PostgreSQL, então réplicas que sobem juntas não conflitam e a migração é aplicada uma única vez.
+- **Migrações com réplicas:** com `RUN_MIGRATIONS=true`, cada réplica roda `prisma migrate deploy` ao subir (no Render e no compose). O Prisma usa *advisory lock* no PostgreSQL, então réplicas que sobem juntas não conflitam e a migração é aplicada uma única vez.
 
 ## 7. CI/CD
 
-O workflow fica na **raiz do repositório** (`.github/workflows/ci-cd.yml`), porque o GitHub Actions só lê workflows nesse caminho. Ele roda dentro de `trabFinal/` e só dispara quando algo nessa pasta muda.
+O workflow fica na **raiz do repositório** (`.github/workflows/ci-cd.yml`), porque o GitHub Actions só lê workflows nesse caminho. Ele dispara quando algo muda em `trabFinal/`, `frontend/` ou no próprio workflow.
 
 **CI — GitHub Actions** (todo push e PR na `main`):
 1. **test**: `npm ci` → `prisma validate` → migrações em Postgres limpo → checagem de drift do schema → typecheck → testes → build → `npm audit` (não bloqueante).
-2. **docker**: constrói a imagem (valida o Dockerfile).
+2. **frontend**: `npm ci` → `vite build` do painel React (`frontend/`).
+3. **docker**: constrói a imagem (valida o Dockerfile).
 
-**CD — Railway** (somente `main`): o serviço da API está ligado ao repositório no GitHub, com *Root Directory* = `trabFinal` e a opção **Wait for CI** ativada. A cada push na `main`, o Railway espera o workflow acima terminar com sucesso; só então constrói a imagem pelo `Dockerfile` e publica nas 2 réplicas. Se o CI falhar, o deploy não acontece.
+**CD — Render (API)** (somente `main`): o Blueprint `render.yaml` cria o PostgreSQL e o serviço Docker (*Root Directory* = `trabFinal`). Com `autoDeployTrigger: checksPass`, a cada push na `main` o Render espera o workflow acima passar; só então constrói a imagem pelo `Dockerfile` e publica. Se o CI falhar, o deploy não acontece. Ao iniciar, o container aplica as migrações (`RUN_MIGRATIONS=true`) e garante o admin inicial (seed idempotente, quando `SEED_ADMIN_PASSWORD` está definida — o plano free não tem shell).
 
-Variáveis configuradas no Railway (nunca no repositório): `DATABASE_URL` (referência ao Postgres do projeto), `JWT_SECRET`, `RUN_MIGRATIONS=true`, `TRUST_PROXY=1`, `EXPOSE_INSTANCE_ID=true`, `NODE_ENV=production`.
+Variáveis no Render (nunca no repositório): `DATABASE_URL` (ligada ao `gym-db`), `JWT_SECRET` (gerado pelo próprio Render), `SEED_ADMIN_PASSWORD`, `CORS_ORIGINS` (URL da Vercel), `RUN_MIGRATIONS=true`, `TRUST_PROXY=1`, `EXPOSE_INSTANCE_ID=true`, `NODE_ENV=production`.
+
+**CD — Vercel (frontend)**: projeto importado do mesmo repositório com *Root Directory* = `frontend`; publica a cada push na `main`. A variável `VITE_API_URL` aponta para a URL do Render.
 
 ## 8. Limitações conhecidas / próximos passos
 
