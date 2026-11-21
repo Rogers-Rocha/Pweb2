@@ -29,7 +29,7 @@ Usuários do seed (somente desenvolvimento):
 ## Rodar com load balancer (2 réplicas + nginx)
 ```bash
 export JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))")
-docker compose up --build            # use --scale api=4 para mais réplicas
+docker compose up --build            # use --scale api=4 para mais réplicas; LB_PORT=8088 se a 8080 estiver ocupada
 DATABASE_URL="postgresql://gym:gym_dev_password@localhost:5432/gym?schema=public" npm run prisma:seed
 for i in $(seq 1 8); do curl -si http://localhost:8080/api/health | grep -i x-instance-id; done
 ```
@@ -61,27 +61,32 @@ curl -si localhost:3000/api/workouts -H "authorization: Bearer $TOKEN" | grep -i
 ## Variáveis de ambiente
 Veja [`.env.example`](.env.example). Obrigatórias: `DATABASE_URL` e `JWT_SECRET` (≥ 32 caracteres).
 
-## Deploy (GitHub Actions + Railway, 2 réplicas)
-- **CI:** `.github/workflows/ci-cd.yml`, na raiz do repositório.
-- **CD:** o Railway faz o deploy a partir da `main`, depois que o CI passa (opção *Wait for CI*).
+## Deploy — API no Render + frontend na Vercel
 
-1. No Railway: **New Project → Deploy from GitHub repo** → escolha este repositório.
-2. No serviço da API, em **Settings**: *Root Directory* = `trabFinal`; *Healthcheck Path* = `/api/health`; *Replicas* = `2`; ative **Wait for CI**. O Railway detecta o `Dockerfile` sozinho.
-3. No projeto: **+ New → Database → PostgreSQL**.
-4. Nas **Variables** do serviço da API:
-   ```
-   DATABASE_URL=${{Postgres.DATABASE_URL}}
-   JWT_SECRET=<gere com: openssl rand -hex 48>
-   NODE_ENV=production
-   RUN_MIGRATIONS=true
-   TRUST_PROXY=1
-   EXPOSE_INSTANCE_ID=true
-   ```
-5. **Settings → Networking → Generate Domain** para ter a URL pública.
-6. Seed do admin em produção (rodando na sua máquina, com a URL **pública** do Postgres, em *Postgres → Variables → `DATABASE_PUBLIC_URL`*):
-   ```bash
-   DATABASE_URL="<DATABASE_PUBLIC_URL>" NODE_ENV=production SEED_ADMIN_PASSWORD="<senha forte>" npm run prisma:seed
-   ```
-7. Prova do balanceamento: `for i in $(seq 1 10); do curl -si https://<seu-app>.up.railway.app/api/health | grep -i x-instance-id; done`
+> **Links em produção:** API `https://<gym-api>.onrender.com/api` · Swagger `https://<gym-api>.onrender.com/docs` · Frontend `https://<seu-front>.vercel.app`
+> _(substituir pelos links reais após o deploy)_
+
+- **CI:** `.github/workflows/ci-cd.yml` (migrações, typecheck, testes, build da API, build do frontend e imagem Docker).
+- **CD:** Render e Vercel ligados ao repositório; publicam automaticamente a cada push na `main` (o Render só depois que o CI passa — `autoDeployTrigger: checksPass`).
+
+### 1) Backend + PostgreSQL no Render (Blueprint)
+1. <https://dashboard.render.com> → **New → Blueprint** → escolha este repositório. O Render lê o [`render.yaml`](../render.yaml) da raiz e cria:
+   - `gym-db` (PostgreSQL free) e
+   - `gym-api` (Docker, *Root Directory* `trabFinal`, health check `/api/health`, `JWT_SECRET` gerado automaticamente).
+2. Ele vai pedir duas variáveis:
+   - `SEED_ADMIN_PASSWORD`: senha do admin inicial (≥ 10 caracteres, não óbvia). O admin `admin@gym.local` é criado na inicialização (seed idempotente).
+   - `CORS_ORIGINS`: deixe por enquanto `http://localhost:5173`. Depois do passo 2, troque pela URL da Vercel.
+3. Aguarde o deploy e teste: `curl https://<gym-api>.onrender.com/api/health`.
+
+### 2) Frontend na Vercel
+1. <https://vercel.com/new> → importe este repositório → **Root Directory = `frontend`** (preset Vite é detectado).
+2. Em **Environment Variables**: `VITE_API_URL = https://<gym-api>.onrender.com` (sem `/api` e sem barra no final).
+3. **Deploy**. Copie a URL de produção (ex.: `https://gym-xyz.vercel.app`).
+4. No Render → `gym-api` → **Environment** → `CORS_ORIGINS = https://gym-xyz.vercel.app` → *Save* (reinicia a API).
+
+### Observações do plano gratuito
+- A API "dorme" após 15 min sem uso; a primeira requisição leva ~1 min para acordar. **Abra o site uns minutos antes da apresentação.**
+- O PostgreSQL free do Render expira após 30 dias.
+- O plano free do Render não permite várias instâncias. Por isso o **load balancing é demonstrado com o Docker Compose** (2 réplicas + nginx, seção acima), o que o enunciado aceita. Em plano pago basta colocar `numInstances: 2` no `render.yaml`, e o `X-Instance-Id` mostra a réplica que respondeu.
 
 O `fly.toml` continua no repositório como alternativa (Fly.io com `min_machines_running = 2`).
