@@ -8,4 +8,11 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
   npx prisma migrate deploy
 fi
 
+# No Render (plano free, sem shell) o admin inicial é criado aqui. O seed é idempotente (upsert)
+# e, com NODE_ENV=production, cria somente o admin com a senha de SEED_ADMIN_PASSWORD.
+if [ -n "$SEED_ADMIN_PASSWORD" ]; then
+  echo "[entrypoint] Garantindo usuário admin inicial (seed)..."
+  node prisma/seed.js || echo "[entrypoint] Aviso: seed falhou (a API sobe mesmo assim)."
+fi
+
 exec node dist/main.js

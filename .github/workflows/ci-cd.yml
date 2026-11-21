@@ -2,8 +2,7 @@
 # Este arquivo PRECISA ficar na raiz do repositório: .github/workflows/ci-cd.yml
 #
 # CI  -> este workflow: migrações em Postgres limpo, checagem de drift, typecheck, testes, build e imagem Docker.
-# CD  -> Railway: o serviço está ligado a este repositório (Root Directory = trabFinal) com
-#        "Wait for CI" ativado; só faz o deploy de um commit na main depois que este workflow passa.
+# CD  -> Render (API, render.yaml na raiz) + Vercel (frontend/). Ambos fazem deploy automático da main.
 name: CI/CD
 
 on:
@@ -11,11 +10,13 @@ on:
     branches: [main]
     paths:
       - "trabFinal/**"
+      - "frontend/**"
       - ".github/workflows/ci-cd.yml"
   pull_request:
     branches: [main]
     paths:
       - "trabFinal/**"
+      - "frontend/**"
       - ".github/workflows/ci-cd.yml"
   workflow_dispatch:
 
@@ -68,6 +69,22 @@ jobs:
       - name: Auditoria de dependências (produção)
         run: npm audit --omit=dev --audit-level=high
         continue-on-error: true
+
+  frontend:
+    name: Build do frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
 
   docker:
     name: Build da imagem Docker
